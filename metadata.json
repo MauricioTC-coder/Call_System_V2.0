@@ -1,0 +1,8 @@
+{
+  "name": "Toyota Andon Logística",
+  "description": "Sistema Andon/TPS de Chamadas em Tempo Real para Operadores e Team Leaders da Logística Toyota.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "Andon Call System – Logística Toyota",
+  "short_name": "Toyota Andon",
+  "description": "Plataforma de chamadas e sinalização operacional em tempo real da linha logística Toyota.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#eb0a1e",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

@@ -1,0 +1,154 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  
+  --color-andon-open: var(--andon-open);
+  --color-andon-progress: var(--andon-progress);
+  --color-andon-done: var(--andon-done);
+  --color-andon-cancel: var(--andon-cancel);
+}
+
+:root {
+  --radius: 0rem; /* Industrial boxy sharp corners style */
+  --background: oklch(0.99 0.004 20);
+  --foreground: oklch(0.18 0.02 25);
+  
+  /* Primary brand colors */
+  --primary: oklch(0.58 0.235 27); /* Toyota Red #EB0A1E */
+  --primary-foreground: oklch(1 0 0);
+  
+  /* Andon states */
+  --andon-open: oklch(0.58 0.235 27);      /* Red */
+  --andon-progress: oklch(0.78 0.18 80);   /* Yellow */
+  --andon-done: oklch(0.62 0.18 150);      /* Green */
+  --andon-cancel: oklch(0.55 0.015 25);    /* Muted Slate Cinza */
+}
+
+/* Base Body settings - Industrial grid mesh backgrounds */
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  background-color: var(--background);
+  color: var(--foreground);
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+  overflow-x: hidden;
+}
+
+/* Custom HMI Visual Classes */
+.hmi-panel {
+  background-color: rgb(255, 255, 255);
+  border: 2px solid rgb(28, 28, 30);
+  box-shadow: 4px 4px 0px rgb(28, 28, 30);
+  padding: 1.25rem;
+}
+
+.hmi-panel-dark {
+  background-color: rgb(24, 24, 27);
+  color: rgb(244, 244, 245);
+  border: 2px solid rgb(9, 9, 11);
+  box-shadow: 4px 4px 0px rgb(9, 9, 11);
+  padding: 1.25rem;
+}
+
+.hmi-panel-header {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.75rem;
+}
+
+/* Hazard style decoration stripes represent line zones */
+.hazard-tape-thin {
+  height: 6px;
+  background: repeating-linear-gradient(
+    -45deg,
+    #eab308,
+    #eab308 10px,
+    #18181b 10px,
+    #18181b 20px
+  );
+  width: 100%;
+}
+
+.hazard-tape-thin-red {
+  height: 6px;
+  background: repeating-linear-gradient(
+    -45deg,
+    #eb0a1e,
+    #eb0a1e 10px,
+    #18181b 10px,
+    #18181b 20px
+  );
+  width: 100%;
+}
+
+/* Standard blink rates for dashboard diagnostic logs */
+@keyframes andonPulseEffect {
+  0%, 100% {
+    background-color: rgb(235, 10, 30);
+    box-shadow: 0 0 16px rgba(235, 10, 30, 0.6);
+  }
+  50% {
+    background-color: rgb(255, 255, 255);
+    box-shadow: 0 0 4px rgba(235, 10, 30, 0.1);
+  }
+}
+
+.andon-pulse {
+  animation: andonPulseEffect 1.2s infinite;
+}
+
+@keyframes progressPulseEffect {
+  0%, 100% {
+    background-color: rgb(234, 179, 8); /* yellow-500 */
+    box-shadow: 0 0 16px rgba(234, 179, 8, 0.5);
+  }
+  50% {
+    background-color: rgb(255, 255, 255);
+    box-shadow: 0 0 4px rgba(234, 179, 8, 0.1);
+  }
+}
+
+.progress-pulse {
+  animation: progressPulseEffect 1.5s infinite;
+}
+
+@keyframes dotPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: rgb(34, 197, 94); /* active green */
+  display: inline-block;
+  animation: dotPulse 1.8s infinite;
+}
+
+.status-dot-orange {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: rgb(249, 115, 22); /* Orange sync */
+  display: inline-block;
+  animation: dotPulse 1.2s infinite;
+}
+
+.blink {
+  animation: dotPulse 2s infinite;
+}
