@@ -17,16 +17,21 @@ app.use(express.json());
 // List of connected SSE clients
 let sseClients: express.Response[] = [];
 
-// Helper to broadcast changes to all SSE clients
+// Helper to broadcast changes to all SSE clients with active dead-connection pruning
 function broadcast(event: string, payload: any) {
   const data = JSON.stringify({ event, payload, timestamp: new Date().toISOString() });
+  const activeClients: express.Response[] = [];
+
   sseClients.forEach((client) => {
     try {
       client.write(`data: ${data}\n\n`);
+      activeClients.push(client);
     } catch (err) {
-      // Clean up failed streams in transmission
+      // Dead stream during write, prune it
     }
   });
+
+  sseClients = activeClients;
 }
 
 // Ensure Database structure
@@ -348,11 +353,40 @@ app.post("/api/auth/nfc-sign-in", (req, res) => {
   res.json({ success: true, user: matched, role });
 });
 
+// Single unified sync api
+app.get("/api/sync-all", (req, res) => {
+  try {
+    const tlExists = db.user_roles.some(ur => ur.role === "team_leader");
+    const resolvedCalls = resolveCalls().sort((a,b) => new Date(b.aberta_em).getTime() - new Date(a.aberta_em).getTime());
+    const sortedLocations = [...db.locations].sort((a,b) => a.ordem - b.ordem);
+    const sortedCallTypes = [...db.call_types].sort((a,b) => a.ordem - b.ordem);
+    const operators = db.profiles.map(p => {
+      const roleRec = db.user_roles.find(ur => ur.user_id === p.id);
+      return {
+        ...p,
+        role: roleRec ? roleRec.role : "team_member"
+      };
+    });
+
+    res.json({
+      calls: resolvedCalls,
+      locations: sortedLocations,
+      call_types: sortedCallTypes,
+      tlExists,
+      audit_log: db.audit_log,
+      operators
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Erro de sincronização interna." });
+  }
+});
+
 // Server-Sent Realtime Events streaming
 app.get("/api/realtime", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
   // Send initial connection feedback
@@ -430,58 +464,73 @@ app.post("/api/bootstrap", (req, res) => {
   res.json({ success: true, user: tlProfile, role: "team_leader" });
 });
 
-// Sign-In with authentication check matching SQLite rules
+// Sign-In with authentication check matching SQLite rules and fallback for ID-based direct selection
 app.post("/api/auth/sign-in", (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email e senha são requeridos." });
+  const { email, password, id } = req.body;
+
+  // 1. Resolve user profile
+  let matchedUser = null;
+
+  // If a direct ID is passed, locate by ID first
+  if (id) {
+    matchedUser = db.profiles.find(p => p.id === id);
   }
 
-  // Check if it is a seeded Team Member login
-  const matchedTM = TEAM_MEMBERS.find(tm => tm.email === email);
-  if (matchedTM) {
-    if (password !== TM_SHARED_PASSWORD) {
-      return res.status(401).json({ error: "Senha inválida para Team Member." });
-    }
-    // Success - Get Profile
-    const profile = db.profiles.find(p => p.id === matchedTM.id) || {
-      id: matchedTM.id,
-      nome: matchedTM.nome,
-      email: matchedTM.email,
-      ativo: true,
-      criado_em: new Date().toISOString()
-    };
-    
-    // Ensure TM role exists in database table
-    if (!db.user_roles.some(ur => ur.user_id === matchedTM.id)) {
-      db.user_roles.push({
-        id: `role-${Math.random().toString(36).substr(2, 9)}`,
-        user_id: matchedTM.id,
-        role: "team_member"
-      });
-      if (!db.profiles.some(p => p.id === matchedTM.id)) {
-        db.profiles.push(profile);
+  // If not found by ID, locate by email matches if email is provided
+  if (!matchedUser && email && email.trim()) {
+    const cleanEmail = email.trim().toLowerCase();
+    matchedUser = db.profiles.find(p => p.email && p.email.toLowerCase() === cleanEmail);
+
+    // Fallback: Check if it matches a seeded TM in constants
+    if (!matchedUser) {
+      const seeded = TEAM_MEMBERS.find(tm => tm.email.toLowerCase() === cleanEmail);
+      if (seeded) {
+        matchedUser = db.profiles.find(o => o.id === seeded.id) || {
+          id: seeded.id,
+          nome: seeded.nome,
+          email: seeded.email,
+          ativo: true,
+          criado_em: new Date().toISOString()
+        };
+        // Save profile if missing dynamically
+        if (!db.profiles.some(o => o.id === seeded.id)) {
+          db.profiles.push(matchedUser);
+        }
+        if (!db.user_roles.some(ur => ur.user_id === seeded.id)) {
+          db.user_roles.push({
+            id: `role-${Math.random().toString(36).substr(2, 9)}`,
+            user_id: seeded.id,
+            role: "team_member"
+          });
+        }
+        saveDB(db);
       }
-      saveDB(db);
     }
-
-    return res.json({ success: true, user: profile, role: "team_member" });
   }
 
-  // Check for Team Leader profile matches
-  const matchedUser = db.profiles.find(p => p.email && p.email.toLowerCase() === email.toLowerCase());
+  // If still not found, return 404
   if (!matchedUser) {
-    return res.status(404).json({ error: "Utilizador não encontrado no sistema." });
+    return res.status(404).json({ error: "Utilizador não cadastrado ou não encontrado no sistema." });
   }
 
-  // Simple hardcoded simulator check for safety and demonstration
-  // All password validations pass for simplicity, or we can check
-  if (password.length < 4) {
-    return res.status(401).json({ error: "Senha incorreta." });
-  }
-
+  // 2. Determine target role
   const roleRecord = db.user_roles.find(ur => ur.user_id === matchedUser.id);
   const role = roleRecord ? roleRecord.role : "team_member";
+
+  // 3. Password validations
+  if (role === "team_leader") {
+    if (!password) {
+      return res.status(400).json({ error: "A palavra-passe/senha é obrigatória para Team Leader." });
+    }
+    if (password.length < 4) {
+      return res.status(401).json({ error: "Palavra-passe de Team Leader incorreta." });
+    }
+  } else {
+    // For manual select/team member login, password is conceptual; only validate if not direct ID-selection
+    if (!id && password && password !== TM_SHARED_PASSWORD) {
+      return res.status(401).json({ error: "Palavra-passe de Team Member incorreta." });
+    }
+  }
 
   res.json({ success: true, user: matchedUser, role });
 });

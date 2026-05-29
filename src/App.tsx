@@ -21,7 +21,7 @@ import InstallPrompt from "./components/InstallPrompt";
 import { Profile, Call, Location, CallType, AuditLog, LiveStats, CallState } from "./types";
 import { TEAM_MEMBERS, TM_SHARED_PASSWORD } from "./lib/constants";
 import { 
-  unlockAudio, playAndon, startAndonLoop, stopAndonLoop, isAndonLooping, setMuteState, getMuteState 
+  unlockAudio, playAndon, startAndonLoop, stopAndonLoop, isAndonLooping, setMuteState, getMuteState, isAudioEnabled
 } from "./lib/andon-sound";
 
 // Active App Path-Based Router States
@@ -66,6 +66,7 @@ export default function App() {
 
   // Interactive UI configurations
   const [audioMuted, setAudioMuted] = useState<boolean>(false);
+  const [audioContextActive, setAudioContextActive] = useState<boolean>(false);
   const [syncStatus, setSyncStatus] = useState<"connected" | "connecting" | "disconnected">("connecting");
   const [floatingToast, setFloatingToast] = useState<{ message: string; type: "info" | "success" | "warning"; id: string } | null>(null);
 
@@ -97,9 +98,27 @@ export default function App() {
   const [closingCallId, setClosingCallId] = useState<string | null>(null);
   const [closingObservation, setClosingObservation] = useState("");
 
-  // SSE EventSource reference and re-connection triggers
+  // SSE EventSource reference, queue locks, and re-connection trackers
   const eventSourceRef = useRef<EventSource | null>(null);
   const [reconnectTrigger, setReconnectTrigger] = useState(0);
+  const isFetchingRef = useRef<boolean>(false);
+
+  // References to keep SSE listener updated without recreating EventSource and exhausting sockets
+  const currentRoleRef = useRef(currentRole);
+  const currentPathRef = useRef(currentPath);
+  const audioMutedRef = useRef(audioMuted);
+
+  useEffect(() => {
+    currentRoleRef.current = currentRole;
+  }, [currentRole]);
+
+  useEffect(() => {
+    currentPathRef.current = currentPath;
+  }, [currentPath]);
+
+  useEffect(() => {
+    audioMutedRef.current = audioMuted;
+  }, [audioMuted]);
 
   // System general tick state (forces re-renders of active stopwatches every second)
   const [tick, setTick] = useState(0);
@@ -116,54 +135,40 @@ export default function App() {
   };
 
   // -----------------------------------------------------------------
-  // 1. DATA API SYNC SERVICES
+  // 1. DATA API SYNC SERVICES (Protected from parallel fetch congestion)
   // -----------------------------------------------------------------
-  const fetchAllData = async () => {
-    setSyncStatus("connecting");
+  const fetchAllData = async (silent = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
 
-    const pCalls = fetch("/api/calls")
-      .then(res => res.ok ? res.json() : [])
-      .then(data => setCalls(data))
-      .catch(err => console.error("Error fetching calls:", err));
-
-    const pLocs = fetch("/api/locations")
-      .then(res => res.ok ? res.json() : [])
-      .then(data => setLocations(data))
-      .catch(err => console.error("Error fetching locations:", err));
-
-    const pTypes = fetch("/api/call_types")
-      .then(res => res.ok ? res.json() : [])
-      .then(data => setCallTypes(data))
-      .catch(err => console.error("Error fetching call types:", err));
-
-    const pCheck = fetch("/api/check-tl")
-      .then(res => res.ok ? res.json() : { exists: false })
-      .then(data => setTlExists(data.exists))
-      .catch(err => console.error("Error checking TL:", err));
-
-    const pAudit = fetch("/api/audit_log")
-      .then(res => res.ok ? res.json() : [])
-      .then(data => setAuditLog(data))
-      .catch(err => console.error("Error fetching audit log:", err));
-
-    const pOps = fetch("/api/operators")
-      .then(res => res.ok ? res.json() : [])
-      .then(data => setOperators(data))
-      .catch(err => console.error("Error fetching operators:", err));
+    if (!silent) {
+      setSyncStatus("connecting");
+    }
 
     try {
-      await Promise.all([pCalls, pLocs, pTypes, pCheck, pAudit, pOps]);
+      const res = await fetch("/api/sync-all");
+      if (!res.ok) {
+        throw new Error(`Sync failed with status: ${res.status}`);
+      }
+      const data = await res.json();
+
+      setCalls(data.calls || []);
+      setLocations(data.locations || []);
+      setCallTypes(data.call_types || []);
+      setTlExists(!!data.tlExists);
+      setAuditLog(data.audit_log || []);
+      setOperators(data.operators || []);
+
       setSyncStatus("connected");
     } catch (err) {
       console.error("Connection synchronization failure:", err);
-      setSyncStatus("disconnected");
+      if (!silent) {
+        setSyncStatus("disconnected");
+      }
+    } finally {
+      isFetchingRef.current = false;
     }
   };
-
-  // Load essential values on boot
-  useEffect(() => {
-    fetchAllData();
-  }, [reconnectTrigger]);
 
   // Handle active audio looping whenever active open calls are in the system
   useEffect(() => {
@@ -190,7 +195,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Set up Server-Sent Events (SSE) stream for instant dispatch and auditory alarms
+  // Set up Server-Sent Events (SSE) stream cleanly ONCE per connection state
   useEffect(() => {
     console.log("Initializing Realtime Andon SSE Channel...");
     const sse = new EventSource("/api/realtime");
@@ -225,7 +230,7 @@ export default function App() {
           setCalls(prev => [payload, ...prev.filter(c => c.id !== payload.id)]);
           triggerToast(`Nova Chamada Ativa: ${payload.id} - ${payload.location_nome}`, "warning");
           // Play a single sequence right away as visual reinforcement
-          if ((currentRole === "team_leader" || currentPath === "/tv") && !audioMuted) {
+          if ((currentRoleRef.current === "team_leader" || currentPathRef.current === "/tv") && !audioMutedRef.current) {
             playAndon();
           }
         } else if (evName === "call_updated") {
@@ -238,7 +243,7 @@ export default function App() {
         } else if (evName === "audit_logged") {
           setAuditLog(prev => [payload, ...prev]);
         } else if (evName === "system_reset" || evName === "system_bootstrapped") {
-          fetchAllData();
+          fetchAllData(true);
           triggerToast("Sistema atualizado pelo administrador.", "info");
         }
       } catch (err) {
@@ -250,17 +255,47 @@ export default function App() {
       sse.close();
       eventSourceRef.current = null;
     };
-  }, [currentRole, audioMuted, currentPath]);
+  }, [reconnectTrigger]);
 
-  // Auto fallback polling at wider intervals (5s) for background protection
+  // Resilient synchronization engine: SSE acts as live instant dispatch,
+  // while an active backup background poll runs every 3 seconds to guarantee updates
+  // on any device or network (mobile, Wi-Fi, corporate proxies with buffers, etc.)
   useEffect(() => {
+    // Immediate refresh on boot, reconnect, or reset
+    fetchAllData();
+
     const backupInterval = setInterval(() => {
-      if (syncStatus !== "connected") {
-        fetchAllData();
-      }
-    }, 5000);
+      fetchAllData(true);
+    }, 3000);
     return () => clearInterval(backupInterval);
-  }, [syncStatus]);
+  }, [reconnectTrigger]);
+
+  // Track and unlock browser AudioContext based on live user gestures
+  useEffect(() => {
+    const checkAudioState = () => {
+      setAudioContextActive(isAudioEnabled());
+    };
+
+    // Frequent checks initially and then steady monitoring
+    checkAudioState();
+    const interval = setInterval(checkAudioState, 1500);
+
+    const unlockAndTrack = () => {
+      unlockAudio();
+      checkAudioState();
+    };
+
+    window.addEventListener("click", unlockAndTrack, { passive: true });
+    window.addEventListener("touchstart", unlockAndTrack, { passive: true });
+    window.addEventListener("keydown", unlockAndTrack, { passive: true });
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("click", unlockAndTrack);
+      window.removeEventListener("touchstart", unlockAndTrack);
+      window.removeEventListener("keydown", unlockAndTrack);
+    };
+  }, []);
 
   // Persist session locally to withstand browser refreshes beautifully
   useEffect(() => {
@@ -480,13 +515,13 @@ export default function App() {
   };
 
   // TEAM MEMBER LOG IN
-  const handleTmSelectLogin = async (tm: typeof TEAM_MEMBERS[number]) => {
+  const handleTmSelectLogin = async (tm: { id: string; email?: string; nome: string }) => {
     try {
       setLoggingIn(true);
       const res = await fetch("/api/auth/sign-in", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: tm.email, password: TM_SHARED_PASSWORD })
+        body: JSON.stringify({ id: tm.id, email: tm.email || "", password: TM_SHARED_PASSWORD })
       });
 
       const body = await res.json();
@@ -981,6 +1016,7 @@ export default function App() {
           currentPath === "/" ? "MENU SELETOR DE CANAL" :
           currentPath.startsWith("/tm") ? `TEAM MEMBER · ${currentUser?.nome || "AGUARDANDO"}` :
           currentPath === "/tl/setup" ? "INITIAL SYSTEM SETUP" :
+          currentPath === "/tv" ? "TV MONITOR DE TRANSMISSÃO" :
           `TEAM LEADER TERMINAL · CONTROL ROOM`
         }
         userName={currentUser?.nome}
@@ -1703,6 +1739,30 @@ export default function App() {
         {/* -------------------------------------------------- */}
         {currentPath === "/tl/chamadas" && currentUser && (
           <div className="flex flex-col gap-6">
+
+            {!audioContextActive && (
+              <div 
+                onClick={handleAudioToggle}
+                className="bg-amber-600 hover:bg-amber-500 border-2 border-amber-850 text-white p-3.5 font-mono text-[10.5px] flex flex-col sm:flex-row justify-between items-center gap-2.5 shadow-md cursor-pointer animate-pulse rounded-sm z-30"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="p-0.5 px-1 bg-black text-amber-500 font-extrabold uppercase text-[9px] rounded-xs shrink-0">ÁUDIO COMPROMETIDO</span>
+                  <p className="font-bold uppercase tracking-tight text-center sm:text-left leading-normal">
+                    ⚠️ Som bloqueado pelo navegador. Toque aqui para autorizar as sirenes Andon do Supervisor!
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleAudioToggle();
+                  }}
+                  className="px-3 py-1 bg-white text-black font-extrabold hover:bg-black hover:text-white transition-colors uppercase tracking-wider text-[9px] shrink-0 border border-black cursor-pointer shadow-sm"
+                >
+                  🔊 ATIVAR ALERTAS
+                </button>
+              </div>
+            )}
             
             {/* Upper Navigation Tabs Ribbon matched styled */}
             <div className="flex flex-col md:flex-row justify-between items-stretch md:items-center gap-3 bg-neutral-900 p-2.5 border-2 border-black shadow">
@@ -2630,6 +2690,35 @@ USING (team_member_id = auth.uid() OR public.has_role(auth.uid(), 'team_leader')
                 </button>
               </div>
             </div>
+
+            {!audioContextActive && (
+              <div 
+                onClick={handleAudioToggle}
+                className="bg-amber-600 hover:bg-amber-500 border-4 border-amber-800 text-white p-6 font-mono text-xs flex flex-col md:flex-row justify-between items-center gap-4 shadow-2xl cursor-pointer animate-pulse rounded-sm z-40"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="p-1 px-2 bg-black text-amber-500 font-black uppercase text-[10px] rounded-xs shrink-0">ÁUDIO COMPROMETIDO</span>
+                  <div className="text-center md:text-left">
+                    <p className="font-extrabold text-sm uppercase tracking-wider leading-relaxed">
+                      ⚠️ Atenção: O navegador bloqueou a reprodução automática de som (Sinalizações Sonoras).
+                    </p>
+                    <p className="text-[11px] text-amber-100 uppercase tracking-wide mt-1">
+                      Clique em qualquer lugar desta tela para Autorizar e ativar as Sirenes e os Alertas Sonoros!
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleAudioToggle();
+                  }}
+                  className="px-5 py-2.5 bg-white text-black font-black hover:bg-black hover:text-white transition-all uppercase tracking-widest text-xs shrink-0 border-2 border-black cursor-pointer shadow-lg active:scale-95"
+                >
+                  🔊 ATIVAR SOM DO MONITOR
+                </button>
+              </div>
+            )}
 
             {/* Main TV Screen: HUGE industrial layout */}
             {(() => {

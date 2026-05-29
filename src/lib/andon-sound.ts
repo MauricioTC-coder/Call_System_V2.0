@@ -123,6 +123,14 @@ export function isAndonLooping(): boolean {
   return loopIntervalId !== null;
 }
 
+/**
+ * Checks if the AudioContext is running and active
+ */
+export function isAudioEnabled(): boolean {
+  if (!audioCtx) return false;
+  return audioCtx.state === "running";
+}
+
 export function setMuteState(muted: boolean) {
   isMutedGlobally = muted;
   if (muted) {
